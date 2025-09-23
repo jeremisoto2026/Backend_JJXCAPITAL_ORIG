@@ -4,20 +4,10 @@ import admin from "firebase-admin";
 
 function initFirebaseAdmin() {
   if (!admin.apps.length) {
-    try {
-      console.log("🔑 Inicializando Firebase Admin...");
-      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-
-      console.log("✅ project_id:", serviceAccount.project_id);
-      console.log("✅ client_email:", serviceAccount.client_email);
-
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-    } catch (e) {
-      console.error("❌ Error inicializando Firebase Admin:", e);
-      throw e;
-    }
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
   }
 }
 
@@ -38,19 +28,24 @@ function findUrlInObj(obj) {
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", process.env.FRONTEND_URL || "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, BinancePay-Signature, BinancePay-Timestamp, BinancePay-Nonce"
-  );
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, BinancePay-Signature, BinancePay-Timestamp, BinancePay-Nonce");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
 
   try {
+    // 👀 Log para verificar variables de entorno (sin exponer secretos)
+    console.log("🌍 Variables de entorno disponibles:", {
+      FRONTEND_URL: process.env.FRONTEND_URL,
+      BINANCE_API_KEY: process.env.BINANCE_API_KEY ? "✅ definida" : "❌ no definida",
+      BINANCE_API_SECRET: process.env.BINANCE_API_SECRET ? "✅ definida" : "❌ no definida",
+      FIREBASE_SERVICE_ACCOUNT: process.env.FIREBASE_SERVICE_ACCOUNT ? "✅ definida" : "❌ no definida",
+    });
+
     initFirebaseAdmin();
 
     const { userId, amount, plan } = req.body;
-    console.log("📩 Body recibido:", { userId, amount, plan });
+    console.log("📩 Body recibido en /api/create-payment:", { userId, amount, plan });
 
     let totalAmount = amount;
     if (!totalAmount) {
@@ -59,7 +54,6 @@ export default async function handler(req, res) {
     }
 
     if (!userId || !totalAmount) {
-      console.warn("⚠️ Faltan parámetros:", { userId, totalAmount });
       return res.status(400).json({ error: "Faltan parámetros: userId o amount/plan" });
     }
 
@@ -72,8 +66,6 @@ export default async function handler(req, res) {
       productName: plan === "annual" ? "Plan Premium Anual" : "Plan Premium Mensual",
     };
 
-    console.log("🛠 Payload Binance:", payload);
-
     const jsonPayload = JSON.stringify(payload);
     const timestamp = Date.now().toString();
     const nonce = crypto.randomBytes(16).toString("hex");
@@ -82,13 +74,6 @@ export default async function handler(req, res) {
       .createHmac("sha512", process.env.BINANCE_API_SECRET)
       .update(signaturePayload)
       .digest("hex");
-
-    console.log("🔐 Headers Binance:", {
-      "BinancePay-Timestamp": timestamp,
-      "BinancePay-Nonce": nonce,
-      "BinancePay-Certificate-SN": process.env.BINANCE_API_KEY?.slice(0, 6) + "...",
-      "BinancePay-Signature": signature?.slice(0, 12) + "...",
-    });
 
     const response = await fetch("https://bpay.binanceapi.com/binancepay/openapi/order", {
       method: "POST",
@@ -103,7 +88,7 @@ export default async function handler(req, res) {
     });
 
     const data = await response.json();
-    console.log("📤 Respuesta Binance:", JSON.stringify(data, null, 2));
+    console.log("📤 Respuesta Binance:", JSON.stringify(data));
 
     try {
       await admin.firestore().collection("payments").doc(merchantTradeNo).set({
@@ -114,17 +99,14 @@ export default async function handler(req, res) {
         status: response.ok ? "created" : "error",
         binanceRaw: data,
       });
-      console.log("💾 Registro guardado en Firestore:", merchantTradeNo);
     } catch (e) {
-      console.error("❌ Error guardando en Firestore:", e);
+      console.error("⚠️ Error guardando payment en Firestore:", e);
     }
 
     const checkoutUrl = findUrlInObj(data) || null;
-    console.log("🔎 checkoutUrl encontrada:", checkoutUrl);
-
     return res.status(response.ok ? 200 : 500).json({ ok: response.ok, checkoutUrl, binance: data });
   } catch (error) {
-    console.error("❌ Error en create-payment:", error);
+    console.error("💥 Error en create-payment:", error);
     return res.status(500).json({ error: "Error creando el pago", details: error.message });
   }
 }
