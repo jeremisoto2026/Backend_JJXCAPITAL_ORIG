@@ -4,16 +4,11 @@ import admin from "firebase-admin";
 
 function initFirebaseAdmin() {
   if (!admin.apps.length) {
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY
-      ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n")
-      : undefined;
+    // 🔑 Parseamos la variable única con todo el JSON
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
     admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey,
-      }),
+      credential: admin.credential.cert(serviceAccount),
     });
   }
 }
@@ -63,7 +58,7 @@ export default async function handler(req, res) {
       currency: "USDT",
       productType: "CASH",
       productName: plan === "annual" ? "Plan Premium Anual" : "Plan Premium Mensual",
-      // Si quieres devolver al frontend después del pago, puedes agregar returnUrl aquí
+      // returnUrl opcional: para redirigir al frontend después de pagar
       // returnUrl: "https://tu-frontend.com/pago-exitoso"
     };
 
