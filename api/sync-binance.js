@@ -1,4 +1,4 @@
-// api/sync-binance.js
+// api/sync-binance-p2p.js
 import crypto from "crypto";
 import admin from "firebase-admin";
 
@@ -26,55 +26,42 @@ export default async function handler(req, res) {
 
     if (!userId) return res.status(400).json({ error: "Falta userId" });
 
-    // 1. Recuperamos apiKey y apiSecret de Firestore
+    // 🔑 Recuperar claves desde Firestore
     const doc = await admin.firestore().collection("binanceKeys").doc(userId).get();
-    if (!doc.exists) {
-      return res.status(404).json({ error: "No se encontraron claves Binance" });
-    }
+    if (!doc.exists) return res.status(404).json({ error: "No se encontraron claves Binance" });
     const { apiKey, apiSecret } = doc.data();
 
-    // 2. Firmamos petición
+    // 🔗 Endpoint P2P user trades (ejemplo)
     const timestamp = Date.now();
-    const queryString = `timestamp=${timestamp}`;
+    const queryString = `timestamp=${timestamp}&limit=50`;
     const signature = signRequest(queryString, apiSecret);
 
-    // 3. Llamamos Binance Deposit History
-    const url = `https://api.binance.com/sapi/v1/capital/deposit/hisrec?${queryString}&signature=${signature}`;
+    const url = `https://api.binance.com/sapi/v1/c2c/orderMatch/listUserOrderHistory?${queryString}&signature=${signature}`;
     const resp = await fetch(url, {
       headers: { "X-MBX-APIKEY": apiKey },
     });
-    const deposits = await resp.json();
 
-    // 4. Llamamos Binance Withdraw History
-    const url2 = `https://api.binance.com/sapi/v1/capital/withdraw/history?${queryString}&signature=${signature}`;
-    const resp2 = await fetch(url2, {
-      headers: { "X-MBX-APIKEY": apiKey },
-    });
-    const withdrawals = await resp2.json();
+    const data = await resp.json();
+    console.log("📥 Binance P2P data:", data);
 
-    // 5. Guardamos en Firestore en /users/{userId}/operations
+    if (!data || !data.data) {
+      return res.status(500).json({ error: "No se recibieron datos válidos de Binance" });
+    }
+
+    // 🔥 Guardar operaciones en Firestore
     const batch = admin.firestore().batch();
     const opsRef = admin.firestore().collection("users").doc(userId).collection("operations");
 
-    deposits.forEach(dep => {
-      const ref = opsRef.doc(dep.txId.toString());
-      batch.set(ref, { type: "deposit", ...dep }, { merge: true });
-    });
-
-    withdrawals.forEach(wd => {
-      const ref = opsRef.doc(wd.id.toString());
-      batch.set(ref, { type: "withdraw", ...wd }, { merge: true });
+    data.data.forEach((op) => {
+      const ref = opsRef.doc(op.orderNumber.toString());
+      batch.set(ref, { type: "p2p", ...op }, { merge: true });
     });
 
     await batch.commit();
 
-    return res.status(200).json({
-      ok: true,
-      deposits,
-      withdrawals,
-    });
+    return res.status(200).json({ ok: true, operations: data.data.length });
   } catch (err) {
-    console.error("💥 Error sync-binance:", err);
+    console.error("💥 Error en sync-binance-p2p:", err);
     return res.status(500).json({ error: err.message });
   }
 }
