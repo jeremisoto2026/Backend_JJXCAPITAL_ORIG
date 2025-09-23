@@ -17,23 +17,21 @@ export default async function handler(req, res) {
 
   try {
     initFirebaseAdmin();
-
     const { userId, apiKey, apiSecret } = req.body;
 
     if (!userId || !apiKey || !apiSecret) {
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
-    // Guardamos en Firestore bajo binanceKeys/{userId}
     await admin.firestore().collection("binanceKeys").doc(userId).set({
       apiKey,
       apiSecret,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: new Date(),
     });
 
-    return res.status(200).json({ ok: true, message: "Claves guardadas correctamente." });
+    return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error("💥 Error en save-binance-keys:", err);
-    return res.status(500).json({ error: "Error guardando las claves", details: err.message });
+    console.error("💥 Error guardando claves:", err);
+    return res.status(500).json({ error: err.message });
   }
 }
