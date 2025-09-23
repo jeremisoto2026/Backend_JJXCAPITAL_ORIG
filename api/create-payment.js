@@ -26,7 +26,8 @@ function findUrlInObj(obj) {
 }
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", process.env.FRONTEND_URL || "*");
+  // ✅ CORS abierto a cualquier dominio
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, BinancePay-Signature, BinancePay-Timestamp, BinancePay-Nonce");
 
@@ -36,7 +37,6 @@ export default async function handler(req, res) {
   try {
     // 👀 Log para verificar variables de entorno (sin exponer secretos)
     console.log("🌍 Variables de entorno disponibles:", {
-      FRONTEND_URL: process.env.FRONTEND_URL,
       BINANCE_API_KEY: process.env.BINANCE_API_KEY ? "✅ definida" : "❌ no definida",
       BINANCE_API_SECRET: process.env.BINANCE_API_SECRET ? "✅ definida" : "❌ no definida",
       FIREBASE_SERVICE_ACCOUNT: process.env.FIREBASE_SERVICE_ACCOUNT ? "✅ definida" : "❌ no definida",
