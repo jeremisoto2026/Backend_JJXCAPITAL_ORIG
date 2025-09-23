@@ -1,3 +1,8 @@
 {
-  "regions": ["fra1", "dub1", "arn1"]
+  "regions": ["fra1"],
+  "build": {
+    "env": {
+      "NODE_VERSION": "18.x"
+    }
+  }
 }
