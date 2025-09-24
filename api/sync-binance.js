@@ -54,6 +54,7 @@ export default async function handler(req, res) {
         "X-MBX-APIKEY": apiKey,
         "Content-Type": "application/json",
       },
+      body: JSON.stringify({}), // 👈 FIX: Binance requiere un body aunque esté vacío
     });
 
     if (!resp.ok) {
@@ -95,7 +96,7 @@ export default async function handler(req, res) {
       connectedAt: connectedAtTs,
     });
   } catch (err) {
-    console.error("💥 Error en sync-binance-p2p:", err);
+    console.error("💥 Error en sync-binance:", err);
     return res.status(500).json({ error: err.message });
   }
 }
