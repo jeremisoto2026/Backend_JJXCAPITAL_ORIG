@@ -1,4 +1,3 @@
-// api/save-binance-keys.js
 import admin from "firebase-admin";
 
 function initFirebaseAdmin() {
@@ -17,7 +16,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
-    return res.status(200).end(); // Preflight response
+    return res.status(200).end(); // ✅ Respuesta preflight
   }
 
   if (req.method !== "POST") {
@@ -32,10 +31,12 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
+    // Guardamos claves con fecha de conexión
     await admin.firestore().collection("binanceKeys").doc(userId).set({
       apiKey,
       apiSecret,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(), // ⏰ mejor que new Date()
+      connectedAt: admin.firestore.FieldValue.serverTimestamp(), // ⏰ para filtrar en sync
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
     return res.status(200).json({ ok: true, message: "Claves guardadas correctamente" });
