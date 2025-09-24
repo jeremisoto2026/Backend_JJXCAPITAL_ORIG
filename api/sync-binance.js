@@ -1,4 +1,3 @@
-// api/sync-binance-p2p.js
 import crypto from "crypto";
 import admin from "firebase-admin";
 
@@ -23,22 +22,34 @@ export default async function handler(req, res) {
   try {
     initFirebaseAdmin();
     const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: "Falta userId" });
 
-    // 🔑 Recuperar claves y fecha de conexión
+    if (!userId) {
+      return res.status(400).json({ error: "Falta userId" });
+    }
+
+    // 🔑 Recuperar claves y fecha de conexión desde Firestore
     const doc = await admin.firestore().collection("binanceKeys").doc(userId).get();
-    if (!doc.exists) return res.status(404).json({ error: "No se encontraron claves Binance" });
-    const { apiKey, apiSecret, connectedAt } = doc.data();
+    if (!doc.exists) {
+      return res.status(404).json({ error: "No se encontraron claves Binance" });
+    }
 
-    // 🔗 Endpoint P2P user trades
+    const { apiKey, apiSecret, connectedAt } = doc.data();
+    if (!apiKey || !apiSecret) {
+      return res.status(400).json({ error: "Claves incompletas" });
+    }
+
+    // Si no hay fecha de conexión, asumimos "ahora"
+    const connectedAtTs = connectedAt?._seconds ? connectedAt._seconds * 1000 : Date.now();
+
+    // 🔗 Endpoint P2P user trades (POST requerido)
     const timestamp = Date.now();
     const queryString = `timestamp=${timestamp}&limit=50`;
     const signature = signRequest(queryString, apiSecret);
 
     const url = `https://api.binance.com/sapi/v1/c2c/orderMatch/listUserOrderHistory?${queryString}&signature=${signature}`;
-    
+
     const resp = await fetch(url, {
-      method: "POST",
+      method: "POST", // 🔥 Importante: debe ser POST
       headers: {
         "X-MBX-APIKEY": apiKey,
         "Content-Type": "application/json",
@@ -52,32 +63,36 @@ export default async function handler(req, res) {
     }
 
     const data = await resp.json();
+    console.log("📥 Binance P2P data:", data);
 
     if (!data || !data.data) {
       return res.status(500).json({ error: "No se recibieron datos válidos de Binance", details: data });
     }
 
-    // 🔥 Filtrar operaciones por fecha de conexión
-    const connectedDate = connectedAt ? new Date(connectedAt) : null;
-    const newOps = connectedDate
-      ? data.data.filter(op => new Date(op.createTime) > connectedDate)
-      : data.data;
+    // 🔥 Filtrar solo operaciones posteriores a connectedAt
+    const newOps = data.data.filter(op => {
+      const orderTime = op.createTime || op.orderTime || 0;
+      return orderTime >= connectedAtTs;
+    });
 
-    // Guardar en Firestore solo las nuevas
+    // Guardar solo operaciones nuevas
     const batch = admin.firestore().batch();
     const opsRef = admin.firestore().collection("users").doc(userId).collection("operations");
 
-    newOps.forEach(op => {
+    newOps.forEach((op) => {
       const ref = opsRef.doc(op.orderNumber.toString());
       batch.set(ref, { type: "p2p", ...op }, { merge: true });
     });
 
-    await batch.commit();
+    if (newOps.length > 0) {
+      await batch.commit();
+    }
 
     return res.status(200).json({
       ok: true,
       operationsSaved: newOps.length,
-      totalFetched: data.data.length,
+      filteredFrom: newOps.length,
+      connectedAt: connectedAtTs,
     });
   } catch (err) {
     console.error("💥 Error en sync-binance-p2p:", err);
