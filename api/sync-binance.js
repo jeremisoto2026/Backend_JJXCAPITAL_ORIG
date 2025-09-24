@@ -1,3 +1,4 @@
+// api/sync-binance.js
 import crypto from "crypto";
 import admin from "firebase-admin";
 
@@ -27,7 +28,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Falta userId" });
     }
 
-    // 🔑 Recuperar claves y fecha de conexión desde Firestore
+    // 🔑 Recuperar claves desde Firestore
     const doc = await admin.firestore().collection("binanceKeys").doc(userId).get();
     if (!doc.exists) {
       return res.status(404).json({ error: "No se encontraron claves Binance" });
@@ -38,61 +39,53 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Claves incompletas" });
     }
 
-    // Si no hay fecha de conexión, asumimos "ahora"
+    // Tomar solo los trades desde la fecha en que el usuario conectó su cuenta
     const connectedAtTs = connectedAt?._seconds ? connectedAt._seconds * 1000 : Date.now();
 
-    // 🔗 Endpoint P2P user trades (POST requerido)
     const timestamp = Date.now();
-    const queryString = `timestamp=${timestamp}&limit=50`;
-    const signature = signRequest(queryString, apiSecret);
 
-    const url = `https://api.binance.com/sapi/v1/c2c/orderMatch/listUserOrderHistory?${queryString}&signature=${signature}`;
+    const query = `timestamp=${timestamp}&startTime=${connectedAtTs}`;
+    const signature = signRequest(query, apiSecret);
+
+    const url = `https://api.binance.com/sapi/v1/tax/userTrades?${query}&signature=${signature}`;
 
     const resp = await fetch(url, {
-      method: "POST", // 🔥 Importante: debe ser POST
+      method: "POST",
       headers: {
         "X-MBX-APIKEY": apiKey,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}), // 👈 FIX: Binance requiere un body aunque esté vacío
     });
 
     if (!resp.ok) {
       const text = await resp.text();
-      console.error("❌ Error Binance:", resp.status, text);
+      console.error("❌ Error Binance Tax API:", resp.status, text);
       return res.status(500).json({ error: `Binance error ${resp.status}`, details: text });
     }
 
     const data = await resp.json();
-    console.log("📥 Binance P2P data:", data);
+    console.log("📥 Binance Tax data:", data);
 
     if (!data || !data.data) {
       return res.status(500).json({ error: "No se recibieron datos válidos de Binance", details: data });
     }
 
-    // 🔥 Filtrar solo operaciones posteriores a connectedAt
-    const newOps = data.data.filter(op => {
-      const orderTime = op.createTime || op.orderTime || 0;
-      return orderTime >= connectedAtTs;
-    });
-
-    // Guardar solo operaciones nuevas
+    // 🔥 Guardar operaciones en Firestore
     const batch = admin.firestore().batch();
     const opsRef = admin.firestore().collection("users").doc(userId).collection("operations");
 
-    newOps.forEach((op) => {
-      const ref = opsRef.doc(op.orderNumber.toString());
-      batch.set(ref, { type: "p2p", ...op }, { merge: true });
+    data.data.forEach((op) => {
+      const ref = opsRef.doc(op.id.toString());
+      batch.set(ref, { type: "binance-tax", ...op }, { merge: true });
     });
 
-    if (newOps.length > 0) {
+    if (data.data.length > 0) {
       await batch.commit();
     }
 
     return res.status(200).json({
       ok: true,
-      operationsSaved: newOps.length,
-      filteredFrom: newOps.length,
+      operationsSaved: data.data.length,
       connectedAt: connectedAtTs,
     });
   } catch (err) {
