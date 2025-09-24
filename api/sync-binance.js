@@ -23,19 +23,14 @@ export default async function handler(req, res) {
   try {
     initFirebaseAdmin();
     const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: "Falta userId" });
 
-    if (!userId) {
-      return res.status(400).json({ error: "Falta userId" });
-    }
-
-    // 🔑 Recuperar claves desde Firestore
+    // 🔑 Recuperar claves y fecha de conexión
     const doc = await admin.firestore().collection("binanceKeys").doc(userId).get();
-    if (!doc.exists) {
-      return res.status(404).json({ error: "No se encontraron claves Binance" });
-    }
-    const { apiKey, apiSecret } = doc.data();
+    if (!doc.exists) return res.status(404).json({ error: "No se encontraron claves Binance" });
+    const { apiKey, apiSecret, connectedAt } = doc.data();
 
-    // 🔗 Endpoint P2P user trades (POST requerido)
+    // 🔗 Endpoint P2P user trades
     const timestamp = Date.now();
     const queryString = `timestamp=${timestamp}&limit=50`;
     const signature = signRequest(queryString, apiSecret);
@@ -43,7 +38,7 @@ export default async function handler(req, res) {
     const url = `https://api.binance.com/sapi/v1/c2c/orderMatch/listUserOrderHistory?${queryString}&signature=${signature}`;
     
     const resp = await fetch(url, {
-      method: "POST", // 🔥 Importante: debe ser POST
+      method: "POST",
       headers: {
         "X-MBX-APIKEY": apiKey,
         "Content-Type": "application/json",
@@ -57,17 +52,22 @@ export default async function handler(req, res) {
     }
 
     const data = await resp.json();
-    console.log("📥 Binance P2P data:", data);
 
     if (!data || !data.data) {
       return res.status(500).json({ error: "No se recibieron datos válidos de Binance", details: data });
     }
 
-    // 🔥 Guardar operaciones en Firestore
+    // 🔥 Filtrar operaciones por fecha de conexión
+    const connectedDate = connectedAt ? new Date(connectedAt) : null;
+    const newOps = connectedDate
+      ? data.data.filter(op => new Date(op.createTime) > connectedDate)
+      : data.data;
+
+    // Guardar en Firestore solo las nuevas
     const batch = admin.firestore().batch();
     const opsRef = admin.firestore().collection("users").doc(userId).collection("operations");
 
-    data.data.forEach((op) => {
+    newOps.forEach(op => {
       const ref = opsRef.doc(op.orderNumber.toString());
       batch.set(ref, { type: "p2p", ...op }, { merge: true });
     });
@@ -76,8 +76,8 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      operations: data.data.length,
-      details: data.data,
+      operationsSaved: newOps.length,
+      totalFetched: data.data.length,
     });
   } catch (err) {
     console.error("💥 Error en sync-binance-p2p:", err);
