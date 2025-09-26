@@ -1,6 +1,8 @@
 // api/save-binance-keys.js
 import admin from "firebase-admin";
+import crypto from "crypto";
 
+// --- INIT FIREBASE ---
 function initFirebaseAdmin() {
   if (!admin.apps.length) {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -10,16 +12,18 @@ function initFirebaseAdmin() {
   }
 }
 
+// --- AES-256-GCM encrypt ---
+const KEY = Buffer.from(process.env.BACKEND_SECRET_HEX, "hex");
+function encryptGCM(plain) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", KEY, iv);
+  const ct = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString("base64")}:${tag.toString("base64")}:${ct.toString("base64")}`;
+}
+
+// --- HANDLER ---
 export default async function handler(req, res) {
-  // 🔐 Configurar CORS (si tu frontend está en otro dominio)
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === "OPTIONS") {
-    return res.status(200).end(); // ✅ Preflight response
-  }
-
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Método no permitido" });
   }
@@ -32,22 +36,33 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
-    // 📌 Guardamos claves junto con la fecha de conexión
-    await admin.firestore().collection("binanceKeys").doc(userId).set(
+    // 🔒 Encriptar secret
+    const encryptedSecret = encryptGCM(apiSecret);
+
+    const db = admin.firestore();
+
+    // Guardar secret en binanceSecrets (solo backend)
+    await db.collection("binanceSecrets").doc(userId).set(
       {
         apiKey,
-        apiSecret,
-        connectedAt: admin.firestore.FieldValue.serverTimestamp(), // ⏰ Usado para sync
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        apiSecretEncrypted: encryptedSecret,
+        connectedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
-      { merge: true } // 🔥 para no sobreescribir si reusa el mismo doc
+      { merge: true }
     );
 
-    return res
-      .status(200)
-      .json({ ok: true, message: "✅ Claves guardadas correctamente" });
+    // Guardar info visible en binanceKeys (para frontend)
+    await db.collection("binanceKeys").doc(userId).set(
+      {
+        apiKeyMasked: `${apiKey.slice(0, 6)}...${apiKey.slice(-6)}`,
+        connectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    return res.status(200).json({ ok: true, message: "Claves guardadas correctamente" });
   } catch (err) {
-    console.error("💥 Error guardando claves:", err);
+    console.error("💥 Error en save-binance-keys:", err);
     return res.status(500).json({ error: err.message });
   }
 }
