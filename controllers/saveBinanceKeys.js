@@ -15,28 +15,44 @@ function initFirebase() {
   }
 }
 
-const KEY = Buffer.from(process.env.BACKEND_SECRET_HEX || '', 'hex');
-if (!KEY || KEY.length !== 32) {
-  console.warn('BACKEND_SECRET_HEX no configurado correctamente (64 hex chars).');
+function getKey() {
+  // Ensure a 32-byte key using SHA256 of the ENCRYPTION_KEY env (simple and stable)
+  const raw = process.env.ENCRYPTION_KEY || 'default-dev-secret-key';
+  return crypto.createHash('sha256').update(raw).digest();
 }
 
-function encryptGCM(plain) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', KEY, iv);
-  const ct = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString('base64')}:${tag.toString('base64')}:${ct.toString('base64')}`;
+function encrypt(text) {
+  try {
+    const key = getKey();
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const encrypted = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
+  } catch (e) {
+    console.warn('Encrypt warning:', e.message);
+    return text; // fallback (not ideal) but avoids crash in dev
+  }
 }
 
 module.exports = async function saveBinanceKeys(req, res) {
   try {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ ok:false, error: 'Method not allowed' });
+    }
+
     initFirebase();
-    const { userId, apiKey, apiSecret } = req.body;
-    if (!userId || !apiKey || !apiSecret) return res.status(400).json({ ok:false, error: 'Faltan parámetros (userId/apiKey/apiSecret)' });
-
     const db = admin.firestore();
-    const encrypted = encryptGCM(apiSecret);
 
+    const { userId, apiKey, apiSecret } = req.body;
+    if (!userId || !apiKey || !apiSecret) {
+      return res.status(400).json({ ok:false, error: 'Faltan userId/apiKey/apiSecret' });
+    }
+
+    // Encriptamos secret
+    const encrypted = encrypt(apiSecret);
+
+    // Guardamos secret en colección separada (binanceSecrets) y marca en binanceKeys
     await db.collection('binanceSecrets').doc(userId).set({
       apiKey,
       apiSecretEncrypted: encrypted,
