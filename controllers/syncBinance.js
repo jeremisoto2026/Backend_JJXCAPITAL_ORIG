@@ -16,17 +16,28 @@ function initFirebase() {
   }
 }
 
-const KEY = Buffer.from(process.env.BACKEND_SECRET_HEX || '', 'hex');
+function getKey() {
+  const raw = process.env.ENCRYPTION_KEY || 'default-dev-secret-key';
+  return crypto.createHash('sha256').update(raw).digest();
+}
 
-function decryptGCM(payload) {
-  const [ivB64, tagB64, ctB64] = payload.split(':');
-  const iv = Buffer.from(ivB64, 'base64');
-  const tag = Buffer.from(tagB64, 'base64');
-  const ct = Buffer.from(ctB64, 'base64');
-  const decipher = crypto.createDecipheriv('aes-256-gcm', KEY, iv);
-  decipher.setAuthTag(tag);
-  const out = Buffer.concat([decipher.update(ct), decipher.final()]);
-  return out.toString('utf8');
+function decrypt(enc) {
+  try {
+    if (!enc || typeof enc !== 'string') return enc;
+    const [ivB64, tagB64, ctB64] = enc.split(':');
+    const iv = Buffer.from(ivB64, 'base64');
+    const tag = Buffer.from(tagB64, 'base64');
+    const ct = Buffer.from(ctB64, 'base64');
+
+    const key = getKey();
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    const out = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return out.toString('utf8');
+  } catch (e) {
+    console.warn('Decrypt warning:', e.message);
+    return enc; // fallback if decryption fails
+  }
 }
 
 function sign(qs, secret) {
@@ -40,24 +51,46 @@ module.exports = async function syncBinance(req, res) {
     }
 
     initFirebase();
+    const db = admin.firestore();
+
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'Falta userId' });
 
-    const db = admin.firestore();
+    // Obtener credenciales guardadas
     const secretDoc = await db.collection('binanceSecrets').doc(userId).get();
-    if (!secretDoc.exists) return res.status(404).json({ error: 'No hay claves registradas' });
+    if (!secretDoc.exists) return res.status(404).json({ error: 'No hay claves guardadas para este usuario' });
 
-    const { apiKey, apiSecretEncrypted, connectedAt } = secretDoc.data();
-    if (!apiKey || !apiSecretEncrypted) return res.status(400).json({ error: 'Claves incompletas' });
+    const secretData = secretDoc.data();
+    const apiKey = secretData.apiKey;
+    const apiSecretEncrypted = secretData.apiSecretEncrypted;
 
-    const apiSecret = decryptGCM(apiSecretEncrypted);
-    const connectedAtTs = connectedAt?._seconds ? connectedAt._seconds * 1000 : Date.now();
+    if (!apiKey || !apiSecretEncrypted) {
+      return res.status(400).json({ error: 'El usuario no tiene API Keys guardadas' });
+    }
 
+    const apiSecret = decrypt(apiSecretEncrypted);
+
+    // connectedAt puede ser un Timestamp de firestore
+    const connectedAt = secretData.connectedAt;
+    let connectedAtTs;
+    if (!connectedAt) {
+      // si no hay fecha, usamos NOW (no sincronizamos histórico)
+      connectedAtTs = Date.now();
+    } else if (connectedAt.toMillis && typeof connectedAt.toMillis === 'function') {
+      connectedAtTs = connectedAt.toMillis();
+    } else if (connectedAt._seconds) {
+      connectedAtTs = connectedAt._seconds * 1000;
+    } else {
+      connectedAtTs = Date.now();
+    }
+
+    // Construimos la query al endpoint de Binance usando startTime = connectedAtTs
     const timestamp = Date.now();
     const qs = `timestamp=${timestamp}&startTime=${connectedAtTs}`;
     const signature = sign(qs, apiSecret);
 
     const base = process.env.BINANCE_BASE_URL || 'https://api.binance.com';
+    // Aquí usamos el endpoint userTrades/tax que tenías en el proyecto original.
     const url = `${base}/sapi/v1/tax/userTrades?${qs}&signature=${signature}`;
 
     const response = await axios.get(url, {
@@ -80,13 +113,23 @@ module.exports = async function syncBinance(req, res) {
       const opsRef = db.collection('users').doc(userId).collection('operations');
 
       for (const item of rows) {
-        const id = (item.orderId || item.tradeId || item.orderNo || item.id) ? String(item.orderId || item.tradeId || item.orderNo || item.id) : crypto.randomBytes(8).toString('hex');
-        const docRef = opsRef.doc(id);
+        const id = (item.orderId || item.tradeId || item.orderNo || item.orderNumber || item.id) || crypto.randomBytes(8).toString('hex');
+        const docRef = opsRef.doc(String(id));
+
+        // Mapea los campos mínimos. Ajusta según la estructura que devuelva Binance.
         const op = {
-          source: 'binance-tax',
+          orderId: item.orderId || item.tradeId || item.orderNo || item.id || null,
+          side: item.side || item.type || null,
+          asset: item.asset || item.symbol || null,
+          amount: item.qty || item.amount || item.quantity || null,
+          price: item.price || item.unitPrice || null,
+          fee: item.fee || null,
+          createTime: item.createTime || item.time || item.tradeTime || Date.now(),
           raw: item,
-          syncedAt: admin.firestore.FieldValue.serverTimestamp()
+          syncedAt: admin.firestore.FieldValue.serverTimestamp(),
+          source: 'binance-p2p'
         };
+
         batch.set(docRef, op, { merge: true });
         saved++;
       }
