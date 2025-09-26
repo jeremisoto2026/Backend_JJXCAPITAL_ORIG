@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { db } from "../firebase.js"; // tu inicialización de Firebase Admin
 
 const BINANCE_BASE_URL = process.env.BINANCE_BASE_URL || "https://api.binance.com";
-const ENCRYPTION_KEY = crypto.createHash("sha256").update(process.env.ENCRYPTION_KEY).digest();
+const ENCRYPTION_KEY = Buffer.from(process.env.BACKEND_SECRET_HEX, "hex");
 
 function encrypt(text) {
   const iv = crypto.randomBytes(16);
